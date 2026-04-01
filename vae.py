@@ -226,3 +226,127 @@ class VAE(torch.nn.Module):
             z = torch.normal(0, 1, (num, self.latent_dim), device=self.device)
             samples = self.decoder(z, torch.tensor(cond).to(self.device))
             return samples.cpu().numpy()
+
+
+def draw_latent_space(model, x_list, c_list):
+    dim = model.latent_dim
+    if dim < 2:
+        return None
+    fig, ax = plt.subplots(1, 1)
+    X = np.concatenate(x_list, axis=0)
+    C = c_list
+    with torch.no_grad():
+        X_t = torch.tensor(X, dtype=torch.float64, device=model.device)
+        C_t = torch.tensor(C, dtype=torch.float64, device=model.device)
+        Z = model(X_t, C_t)
+        Z = Z.cpu().numpy()
+    print('Latent space std:', np.std(Z, 0))
+    _, p_val = normaltest(Z)
+    print('p values of the normal test:', p_val)
+    worst_p_args = np.argsort(p_val)[:2]
+    worst_z = Z[:, worst_p_args]
+    if dim > 2:
+        Z = TSNE().fit_transform(Z)
+    if dim == 2:
+        fig.suptitle('Latent space 2 dim')
+    else:
+        fig.suptitle(f'Latent space {dim} dim, t-SNE')
+    start_idx, end_idx = 0, 0
+    for i in range(len(x_list)):
+        end_idx += x_list[i].shape[0]
+        cur_cls = Z[start_idx:end_idx]
+        ax.scatter(*cur_cls.T)
+        start_idx += x_list[i].shape[0]
+    fig, ax = plt.subplots(1, 1)
+    ax.scatter(*worst_z.T)
+    fig.suptitle(f'Worst p vals projection (axis {worst_p_args})')
+    return fig, ax
+
+def x_experiment_linear():
+    cls_centers = 0.1 * np.asarray(
+        [
+            [-2, 1],
+            [-3, 4],
+            [2, 2],
+            [5, 5]
+        ]
+    ).astype(np.double)
+    n_per_cls = 50
+    
+    cls_points = np.stack(
+        [np.random.normal(c, 0.025, (n_per_cls, cls_centers.shape[1])) for c in cls_centers], 0)
+    x_train = []
+    x_clusters = []
+    clr = ['r', 'b']
+    cls_cond_labels = [0, 0]
+    cls_labels = []
+    for i in range(0, cls_centers.shape[0], 2):
+        mix_coef = np.random.uniform(0, 1, (n_per_cls, 1))
+        X = cls_points[i] * mix_coef + cls_points[i + 1] * (1 - mix_coef)
+        X += np.random.normal(0, 0.005, X.shape)
+        x_train.append(X)
+        x_train.append(cls_points[i])
+        x_train.append(cls_points[i + 1])
+        cluster_points = np.concatenate((X, cls_points[i], cls_points[i + 1]), axis=0)
+        cls_labels += [cls_cond_labels[i // 2]] * cluster_points.shape[0]
+        x_clusters.append(cluster_points)
+        
+    x_train = np.concatenate(x_train, 0)
+    # x_train = np.concatenate((x_train, cls_points.reshape(-1, cls_centers.shape[1])), 0)
+    # cls_labels = [0] * n_per_cls + [1] * n_per_cls + [0] * (2 * n_per_cls) + [1] * (2 * n_per_cls)
+    cls_labels = np.asarray(cls_labels, dtype=np.double)
+    
+    model = VAE(**params)
+    model.fit(x_train, cls_labels)
+    
+    def draw_train_set_2d(name):
+        fig, ax = plt.subplots(1, 1, dpi=100, figsize=(6, 6))
+        fig.suptitle(name)
+        ax.set_xlabel('$x_1$')
+        ax.set_ylabel('$x_2$')
+        for i in range(2):
+            ax.scatter(*x_clusters[i].T, c=clr[i], s=0.8, label='Cluster ' + str(i + 1))
+        ax.xaxis.set_zorder(-100)
+        ax.yaxis.set_zorder(-100)
+        ax.grid(linestyle='--', alpha=0.5)
+        return fig, ax
+    
+        
+    x_e_all = model.predict(x_train, cls_labels)
+    
+    fig, ax = draw_train_set_2d('Reconstruction')
+    ax.scatter(*x_e_all.T, c='k', s=8, label='Sampled points')
+    ax.legend()
+    
+    fig, ax = draw_train_set_2d(f'Reconstruction {cls_cond_labels[0]}')
+    ax.scatter(*x_e_all[cls_labels == cls_cond_labels[0]].T, c='k', s=8, label=f'Sampled points {cls_cond_labels[0]}')
+    ax.legend()
+    
+    fig, ax = draw_train_set_2d(f'Reconstruction {cls_cond_labels[1]}')
+    ax.scatter(*x_e_all[cls_labels == cls_cond_labels[1]].T, c='k', s=8, label=f'Sampled points {cls_cond_labels[1]}')
+    ax.legend()
+    
+    fig, ax = draw_train_set_2d(f'Generation {cls_cond_labels[0]}')
+    x_smp = model.sample(x_train.shape[0], cls_cond_labels[0] + np.zeros(x_train.shape[0]))
+    ax.scatter(*x_smp.T, c='k', s=8, label='Sampled points 0')
+    ax.legend()
+    
+    fig, ax = draw_train_set_2d(f'Generation {cls_cond_labels[1]}')
+    x_smp = model.sample(x_train.shape[0], cls_cond_labels[1] + np.zeros(x_train.shape[0]))
+    ax.scatter(*x_smp.T, c='k', s=8, label='Sampled points 1')
+    ax.legend()
+    
+    draw_latent_space(model, x_clusters, cls_labels)
+    
+    plt.show()
+    
+if __name__ == '__main__':
+    params = {
+        'latent_dim': 8,
+        'regular_coef': 0.1, 
+        'epochs': 300,
+        'batch_num': 64, 
+        'l_r': 2e-3, 
+        'device': 'cpu'
+    }
+    x_experiment_linear()
